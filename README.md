@@ -1,4 +1,4 @@
-# Bet Admin Dashboard
+# NOVA BET
 
 Local administration console for deposits, simulated withdrawals, sites, domains and administrator accounts. Built by [brunnodev](https://brunnodev.store).
 
