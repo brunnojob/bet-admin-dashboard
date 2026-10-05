@@ -1,32 +1,36 @@
 # NOVA BET
 
-Local administration console for deposits, simulated withdrawals, sites, domains and administrator accounts. Built by [brunnodev](https://brunnodev.store).
+Painel administrativo local de depósitos, saques, sites, domínios e administradores. Desenvolvido por [brunnodev](https://brunnodev.store).
 
-## Run
+## Executar no PC
 
-Requires Python 3.10 or newer. No external dependencies.
-
-```sh
-python server.py
-```
-
-Open http://localhost:8000. Initial development login: `admingb` / `admin`.
-
-The server binds to `127.0.0.1`. SQLite persists records in `admin.sqlite3`; do not commit this database. Set `BET_ADMIN_DB` to use another database location.
-
-## Features
-
-- Overview with completed deposit/withdrawal totals, pending records and infrastructure counts.
-- Create, view, edit, search and delete deposits and simulated withdrawals.
-- CRUD for sites, domains and administrator logins. Domain/site links enforce referential integrity.
-- Password hashing with scrypt, server-side authentication, expiring HttpOnly sessions, CSRF tokens and login throttling.
-- Audit trail for changes; protection against deleting your current login or removing the last active administrator.
-- Responsive Portuguese interface, BRL formatting and integer-cent accounting.
-
-Withdrawals only create local records; no payment provider, Pix or actual betting integration exists. Site/domain creation is inventory registration, not provisioning, hosting or DNS configuration. All administrators share management privileges. Sessions and login throttling reset when the server restarts. The default credentials are for localhost development; change them before adapting this application for deployment.
-
-## Verify
+Requer Node.js 24 ou superior com npm. Python não é necessário.
 
 ```sh
-python -m unittest discover -s tests -v
+npm install
+npm run dev
 ```
+
+Abra http://localhost:8000. Login inicial: `admingb` / `admin`.
+
+`npm run dev` reinicia o servidor quando o código do servidor muda. Atualize o navegador após editar a interface. Use `npm start` para executar sem reinício automático e `npm test` para testar a API.
+
+## Recursos
+
+- Visão geral com totais em reais e pendências.
+- CRUD e busca de depósitos, saques, sites, domínios e administradores.
+- SQLite persistente, senhas com scrypt, sessão HttpOnly, proteção CSRF e limite de tentativas de login.
+- Histórico de alterações e proteção do último administrador ativo.
+- Interface responsiva em português.
+
+## Gateway
+
+O gateway ainda não está conectado. Depósitos e saques são registros administrativos; salvar um registro ou marcar como concluído não cobra nem transfere dinheiro. A API informa `gateway.connected: false`. A integração futura deve criar operações no provedor, armazenar seus identificadores e atualizar os estados por webhooks autenticados e idempotentes. Não marque pagamentos reais como concluídos a partir do formulário de CRUD.
+
+Sites e domínios são cadastros; não há provisionamento de hospedagem nem alteração de DNS.
+
+## Dados e configuração
+
+O servidor escuta apenas em `127.0.0.1`. Os dados ficam em `admin.sqlite3`, ignorado pelo Git. Bancos criados pela versão anterior em Python são compatíveis, inclusive os hashes de senha. Faça backup antes de migrar.
+
+Variáveis opcionais: `PORT` (padrão `8000`) e `BET_ADMIN_DB` (caminho do banco). Sessões são encerradas quando o servidor reinicia. Todos os administradores têm acesso ao CRUD completo. O login padrão é para desenvolvimento local; revise autenticação e permissões antes de publicar.
