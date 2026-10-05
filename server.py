@@ -209,5 +209,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     initialize()
-    print('Bet Admin disponível em http://localhost:8000')
+    print('NOVA BET disponível em http://localhost:8000')
     ThreadingHTTPServer(('127.0.0.1', 8000), Handler).serve_forever()
