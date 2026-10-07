@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
 
+# Ajuste para a quantidade restante se já concluiu alguns PRs.
 $TotalPRs = 601
-$IntervaloEntrePRs = 120
+
+$IntervaloEntrePRs = 60
 $IntervaloEntreChamadas = 3
 
 $MockFile = "mock_betting_sessions.csv"
