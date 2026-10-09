@@ -1,7 +1,6 @@
 import {
   createHash,
   randomBytes,
-  randomUUID,
   scrypt,
   timingSafeEqual,
   createHmac,
@@ -31,7 +30,7 @@ const supabaseKey = () =>
 function supabaseHeaders(extra = {}) {
   const key = supabaseKey();
   if (!supabaseUrl() || !key)
-    fail("Backend Supabase não configurado na Vercel.", 503);
+    fail("Backend Supabase não configurado no servidor.", 503);
   const headers = { apikey: key, "Content-Type": "application/json", ...extra };
   if (!key.startsWith("sb_")) headers.Authorization = `Bearer ${key}`;
   return headers;
@@ -85,7 +84,11 @@ function send(res, status, payload, cookie) {
 }
 
 async function body(req) {
-  if (req.body && typeof req.body === "object") return req.body;
+  if (req.body !== undefined) {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) fail("JSON inválido.");
+    if (Buffer.byteLength(JSON.stringify(req.body)) > JSON_LIMIT) fail("Requisição muito grande.", 413);
+    return req.body;
+  }
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
@@ -95,7 +98,9 @@ async function body(req) {
   }
   if (!chunks.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) fail("JSON inválido.");
+    return value;
   } catch {
     fail("JSON inválido.");
   }
@@ -104,7 +109,7 @@ async function body(req) {
 function cookie(req, name) {
   const raw = req.headers.cookie || "";
   const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
+  try { return match ? decodeURIComponent(match[1]) : null; } catch { return null; }
 }
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const newToken = () => randomBytes(32).toString("base64url");
@@ -148,8 +153,8 @@ async function bootstrapAdmin() {
   if (existing?.length) return;
   const username = process.env.INITIAL_ADMIN_USERNAME;
   const password = process.env.INITIAL_ADMIN_PASSWORD;
-  if (!username || !password || password.length < 12)
-    fail("Administrador inicial não configurado na Vercel.", 503);
+  if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username || "") || !password || password.length < 12 || password.length > 256)
+    fail("Administrador inicial não configurado no servidor.", 503);
   await db("admin_users", {
     method: "POST",
     body: {
@@ -243,7 +248,7 @@ async function login(req, res, data) {
   await bootstrapAdmin();
   const username = String(data.username || "").trim();
   const password = String(data.password || "");
-  if (!username || !password || password.length > 256)
+  if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username) || !password || password.length > 256)
     fail("Login ou senha inválidos.", 401);
 
   const minuteAgo = new Date(Date.now() - 60000).toISOString();
@@ -288,7 +293,7 @@ async function login(req, res, data) {
     prefer: "return=minimal",
   });
   await audit(user.username, "LOGIN");
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const secure = process.env.NODE_ENV === "production" || process.env.NETLIFY === "true" ? "; Secure" : "";
   send(
     res,
     200,
@@ -300,22 +305,24 @@ async function login(req, res, data) {
 async function state(res, session) {
   const [sites, domains, transactions, users, history] = await Promise.all([
     db("sites", {
-      query: { select: "id,name,url,status,created_at", order: "id.desc" },
+      query: { select: "id,name,url,status,created_at", order: "id.desc", limit: 1000 },
     }),
     db("domains", {
-      query: { select: "id,name,site_id,status,created_at", order: "id.desc" },
+      query: { select: "id,name,site_id,status,created_at", order: "id.desc", limit: 1000 },
     }),
     db("transactions", {
       query: {
         select:
           "id,kind,customer,amount,status,site_id,provider,provider_payment_id,external_reference,payment_method,payer_email,payer_document,created_at,updated_at",
         order: "id.desc",
+        limit: 1000,
       },
     }),
     db("admin_users", {
       query: {
         select: "id,username,active,created_at,updated_at",
         order: "id.desc",
+        limit: 1000,
       },
     }),
     db("audit", {
@@ -330,10 +337,11 @@ async function state(res, session) {
     username: session.user.username,
     csrf: session.csrf,
     gateway: {
-      connected: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN),
+      configured: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN && process.env.MERCADOPAGO_WEBHOOK_SECRET),
       provider: "mercado_pago",
-      mode: "production",
+      mode: process.env.MERCADOPAGO_ENVIRONMENT || "test",
     },
+    truncated: [sites, domains, transactions, users].some(rows => rows.length >= 1000),
     sites,
     domains,
     transactions,
@@ -346,10 +354,13 @@ async function mutate(resource, method, id, data, session) {
   const actor = session.user.username;
   if (!["sites", "domains", "transactions", "users"].includes(resource))
     fail("Não encontrado.", 404);
-  if (id && (!Number.isSafeInteger(id) || id < 1)) fail("ID inválido.");
+  if (!["POST", "PUT", "DELETE"].includes(method)) fail("Método não permitido.", 405);
+  if ((method === "POST" && id !== null) || (method !== "POST" && id === null)) fail("Rota inválida.", 400);
+  if (id !== null && (!Number.isSafeInteger(id) || id < 1)) fail("ID inválido.");
+  if (data.site_id !== undefined && data.site_id !== "" && data.site_id !== null && (!Number.isSafeInteger(Number(data.site_id)) || Number(data.site_id) < 1)) fail("Site inválido.");
 
   let payload = {};
-  if (resource === "sites") {
+  if (resource === "sites" && method !== "DELETE") {
     const name = String(data.name || "").trim();
     if (!name || name.length > 240) fail("Nome inválido.");
     let url;
@@ -363,7 +374,7 @@ async function mutate(resource, method, id, data, session) {
     if (!["ativo", "inativo"].includes(status)) fail("Status inválido.");
     payload = { name, url: url.toString(), status };
   }
-  if (resource === "domains") {
+  if (resource === "domains" && method !== "DELETE") {
     const status = String(data.status || "ativo");
     if (!["ativo", "inativo"].includes(status)) fail("Status inválido.");
     payload = {
@@ -372,7 +383,7 @@ async function mutate(resource, method, id, data, session) {
       status,
     };
   }
-  if (resource === "transactions") {
+  if (resource === "transactions" && method !== "DELETE") {
     const kind = String(data.kind || "");
     const status = String(data.status || "pendente");
     if (
@@ -390,7 +401,7 @@ async function mutate(resource, method, id, data, session) {
         "Saque não pode ser marcado como concluído sem uma operação real de payout.",
         409,
       );
-    const customer = String(data.customer || "").trim();
+    const customer = session.user.username;
     if (!customer || customer.length > 240)
       fail("Cliente/referência inválido.");
     payload = {
@@ -401,14 +412,14 @@ async function mutate(resource, method, id, data, session) {
       site_id: data.site_id ? Number(data.site_id) : null,
     };
   }
-  if (resource === "users") {
+  if (resource === "users" && method !== "DELETE") {
     const username = String(data.username || "").trim();
     if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username)) fail("Login inválido.");
     const active =
       data.active === true || data.active === "true" || data.active === "1";
     payload = { username, active, updated_at: new Date().toISOString() };
     if (data.password) {
-      if (String(data.password).length < 12)
+      if ((String(data.password).length < 12 || String(data.password).length > 256))
         fail("A senha deve ter ao menos 12 caracteres.");
       payload.password_hash = await hashPassword(String(data.password));
     } else if (method === "POST")
@@ -434,15 +445,12 @@ async function mutate(resource, method, id, data, session) {
   const existing = before?.[0];
   if (!existing) fail("Registro não encontrado.", 404);
 
-  if (
-    resource === "transactions" &&
-    existing.provider === "mercado_pago" &&
-    payload.status !== existing.status
-  )
-    fail(
-      "O status de um pagamento Mercado Pago é atualizado apenas pelo webhook.",
-      409,
-    );
+  if (resource === "transactions" && (existing.provider === "mercado_pago" || existing.status === "concluido"))
+    fail("Movimentações processadas são imutáveis. Use a conciliação do provedor.", 409);
+  if (resource === "transactions" && existing.customer !== actor)
+    fail("Esta movimentação pertence a outro administrador.", 403);
+  if (resource === "transactions" && method === "PUT" && existing.kind !== payload.kind)
+    fail("O tipo da movimentação não pode ser alterado.", 409);
 
   if (resource === "users") {
     const activeUsers = await db("admin_users", {
@@ -465,7 +473,7 @@ async function mutate(resource, method, id, data, session) {
       body: payload,
       prefer: "return=minimal",
     });
-    if (resource === "users" && payload.active === false)
+    if (resource === "users" && (payload.active === false || payload.password_hash))
       await db("admin_sessions", {
         method: "DELETE",
         query: { user_id: `eq.${id}` },
@@ -479,82 +487,85 @@ async function mutate(resource, method, id, data, session) {
   return { ok: true, id };
 }
 
-async function createPix(data, session) {
+async function mercadoPago(path, options = {}) {
   const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-  if (!accessToken)
-    fail("Credencial de produção do Mercado Pago ainda não configurada.", 503);
+  if (!accessToken) fail("Mercado Pago não configurado.", 503);
+  let response;
+  try {
+    response = await fetch(`https://api.mercadopago.com${path}`, {
+      ...options,
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...options.headers },
+      signal: AbortSignal.timeout(12000),
+      redirect: "error",
+    });
+  } catch { fail("Mercado Pago indisponível. Tente novamente com a mesma solicitação.", 502); }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) fail("Mercado Pago recusou a operação.", 502);
+  return result;
+}
+
+function paymentMode(payment) {
+  const mode = process.env.MERCADOPAGO_ENVIRONMENT || "test";
+  if (!["test", "production"].includes(mode)) fail("Ambiente Mercado Pago inválido.", 503);
+  if (typeof payment.live_mode !== "boolean" || payment.live_mode !== (mode === "production"))
+    fail("O ambiente do pagamento não corresponde à configuração.", 409);
+}
+
+async function createPix(data, session) {
+  const mode = process.env.MERCADOPAGO_ENVIRONMENT || "test";
+  if (!["test", "production"].includes(mode)) fail("Ambiente Mercado Pago inválido.", 503);
+  if (!process.env.MERCADOPAGO_WEBHOOK_SECRET) fail("Configure o webhook antes de criar pagamentos.", 503);
+  let notificationUrl;
+  try {
+    notificationUrl = new URL("/api/mercadopago/webhook", process.env.APP_URL);
+    if (notificationUrl.protocol !== "https:") throw new Error();
+  } catch { fail("Configure a URL HTTPS do painel.", 503); }
   const amountCents = cents(data.amount);
-  const email = String(data.payer_email || "")
-    .trim()
-    .toLowerCase();
+  const email = String(data.payer_email || "").trim().toLowerCase();
   const cpf = String(data.payer_document || "").replace(/\D/g, "");
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
-    fail("E-mail do pagador inválido.");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fail("E-mail do pagador inválido.");
   if (!/^\d{11}$/.test(cpf)) fail("CPF do pagador inválido.");
-  const customer = String(data.customer || email)
-    .trim()
-    .slice(0, 240);
-  const externalReference = `nova-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
-  const idempotencyKey = randomUUID();
-
-  const response = await fetch("https://api.mercadopago.com/v1/payments", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": idempotencyKey,
-    },
-    body: JSON.stringify({
-      transaction_amount: amountCents / 100,
-      description: String(data.description || "Depósito NOVA BET").slice(
-        0,
-        150,
-      ),
-      payment_method_id: "pix",
-      external_reference: externalReference,
-      payer: { email, identification: { type: "CPF", number: cpf } },
-    }),
+  const key = String(data.idempotency_key || "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key))
+    fail("Identificador de solicitação inválido.");
+  const siteId = data.site_id ? Number(data.site_id) : null;
+  if (siteId !== null && (!Number.isSafeInteger(siteId) || siteId < 1)) fail("Site inválido.");
+  const account = await mercadoPago("/users/me");
+  if (!Array.isArray(account.tags)) fail("Não foi possível verificar o ambiente da conta.", 503);
+  if (account.tags.includes("test_user") !== (mode === "test"))
+    fail("As credenciais não correspondem ao ambiente configurado.", 409);
+  const externalReference = `nova-${session.user.id}-${key.toLowerCase()}`;
+  await db("transactions", {
+    method: "POST", query: { on_conflict: "external_reference" },
+    prefer: "resolution=ignore-duplicates,return=minimal",
+    body: { kind: "deposito", customer: session.user.username, amount: amountCents,
+      status: "pendente", site_id: siteId, provider: "mercado_pago",
+      external_reference: externalReference, payment_method: "pix", payer_email: email,
+      payer_document: cpf, live_mode: mode === "production" },
   });
-  const payment = await response.json().catch(() => ({}));
-  if (!response.ok || !payment?.id) {
-    console.error(
-      "Mercado Pago create error",
-      response.status,
-      payment?.message || "",
-    );
-    fail("Mercado Pago recusou a criação do pagamento.", 502);
-  }
-
-  const rows = await db("transactions", {
-    method: "POST",
-    body: {
-      kind: "deposito",
-      customer,
-      amount: amountCents,
-      status: statusFromMercadoPago(payment.status),
-      site_id: data.site_id ? Number(data.site_id) : null,
-      provider: "mercado_pago",
-      provider_payment_id: String(payment.id),
-      external_reference: externalReference,
-      payment_method: "pix",
-      payer_email: email,
-      payer_document: cpf,
-      updated_at: new Date().toISOString(),
-    },
-    prefer: "return=representation",
-  });
-  await audit(session.user.username, `CREATE PIX Mercado Pago #${payment.id}`);
+  const rows = await db("transactions", { query: { select: "*", external_reference: `eq.${externalReference}`, limit: 1 } });
+  const row = rows?.[0];
+  if (!row || row.amount !== amountCents || row.payer_email !== email || row.payer_document !== cpf || row.site_id !== siteId || row.live_mode !== (mode === "production"))
+    fail("Esta solicitação já foi usada com outros dados. Abra uma nova movimentação.", 409);
+  const payment = row.provider_payment_id
+    ? await mercadoPago(`/v1/payments/${encodeURIComponent(row.provider_payment_id)}`)
+    : await mercadoPago("/v1/payments", {
+        method: "POST", headers: { "X-Idempotency-Key": sha256(externalReference) },
+        body: JSON.stringify({ transaction_amount: row.amount / 100,
+          description: "Movimentação administrativa NOVA", payment_method_id: "pix",
+          external_reference: externalReference, notification_url: notificationUrl.toString(),
+          payer: { email: row.payer_email, identification: { type: "CPF", number: row.payer_document } } }),
+      });
+  if (!payment.id) fail("Resposta de pagamento inválida.", 502);
+  paymentMode(payment);
+  if (payment.external_reference !== externalReference || Math.round(Number(payment.transaction_amount) * 100) !== row.amount || payment.currency_id !== "BRL")
+    fail("Dados do pagamento divergentes.", 409);
+  await db("transactions", { method: "PATCH", query: { id: `eq.${row.id}` },
+    body: { status: statusFromMercadoPago(payment.status), provider_payment_id: String(payment.id), updated_at: new Date().toISOString() }, prefer: "return=minimal" });
+  await audit(session.user.username, `PIX Mercado Pago #${payment.id}`);
   const tx = payment.point_of_interaction?.transaction_data || {};
-  return {
-    ok: true,
-    transaction_id: rows?.[0]?.id,
-    payment_id: String(payment.id),
-    status: payment.status,
-    external_reference: externalReference,
-    qr_code: tx.qr_code || null,
-    qr_code_base64: tx.qr_code_base64 || null,
-    ticket_url: tx.ticket_url || null,
-  };
+  return { ok: true, transaction_id: row.id, payment_id: String(payment.id), status: payment.status,
+    qr_code: tx.qr_code || null, qr_code_base64: tx.qr_code_base64 || null, ticket_url: tx.ticket_url || null };
 }
 
 function verifyWebhook(req, dataId) {
@@ -565,9 +576,9 @@ function verifyWebhook(req, dataId) {
   const parts = Object.fromEntries(
     signature.split(",").map((x) => x.trim().split("=")),
   );
-  if (!parts.ts || !parts.v1 || !requestId || !dataId)
+  if (!/^\d+$/.test(parts.ts || "") || !/^[a-f0-9]{64}$/i.test(parts.v1 || "") || !requestId || !dataId)
     fail("Assinatura de webhook ausente.", 401);
-  const manifest = `id:${dataId};request-id:${requestId};ts:${parts.ts};`;
+  const manifest = `id:${dataId.toLowerCase()};request-id:${requestId};ts:${parts.ts};`;
   const calculated = createHmac("sha256", secret)
     .update(manifest)
     .digest("hex");
@@ -585,27 +596,18 @@ async function webhook(req, data, url) {
       "",
   );
   verifyWebhook(req, dataId);
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-  if (!accessToken) fail("Credencial do Mercado Pago não configurada.", 503);
-  const response = await fetch(
-    `https://api.mercadopago.com/v1/payments/${encodeURIComponent(dataId)}`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    },
-  );
-  const payment = await response.json().catch(() => ({}));
-  if (!response.ok || !payment?.id)
-    fail("Falha ao consultar pagamento no Mercado Pago.", 502);
+  if (!/^\d+$/.test(dataId)) fail("ID de pagamento inválido.");
+  const payment = await mercadoPago(`/v1/payments/${encodeURIComponent(dataId)}`);
+  if (!payment?.id) fail("Falha ao consultar pagamento.", 502);
+  paymentMode(payment);
+  const rows = await db("transactions", { query: { select: "id,amount,provider_payment_id,external_reference,live_mode", external_reference: `eq.${payment.external_reference}`, provider: "eq.mercado_pago", limit: 1 } });
+  const row = rows?.[0];
+  if (!row) return { ok: true };
+  if (Math.round(Number(payment.transaction_amount) * 100) !== row.amount || payment.currency_id !== "BRL" || row.live_mode !== payment.live_mode || (row.provider_payment_id && row.provider_payment_id !== String(payment.id)))
+    fail("Dados do pagamento divergentes.", 409);
   await db("transactions", {
-    method: "PATCH",
-    query: {
-      provider: "eq.mercado_pago",
-      provider_payment_id: `eq.${payment.id}`,
-    },
-    body: {
-      status: statusFromMercadoPago(payment.status),
-      updated_at: new Date().toISOString(),
-    },
+    method: "PATCH", query: { id: `eq.${row.id}` },
+    body: { status: statusFromMercadoPago(payment.status), provider_payment_id: String(payment.id), updated_at: new Date().toISOString() },
     prefer: "return=minimal",
   });
   await audit(
@@ -644,7 +646,7 @@ export default async function handler(req, res) {
         prefer: "return=minimal",
       });
       await audit(session.user.username, "LOGOUT");
-      const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+      const secure = process.env.NODE_ENV === "production" || process.env.NETLIFY === "true" ? "; Secure" : "";
       return send(
         res,
         200,
