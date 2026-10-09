@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` and configure private values locally. Never commit
 
 ## Netlify
 
-The repository is linked to the Netlify project `nova-admin-brunnojob`, with `main` as the production branch. `netlify.toml` sets the build command, publish directory, and function bundle. The modern Netlify function serves `/api/*` and preserves the shared Node handler's cookies, body limits, HTTP status, and headers. `.netlify/` is excluded from Git.
+The repository is linked to the Netlify project `novabetadmin`, with `main` as the production branch. `netlify.toml` sets the build command, publish directory, and function bundle. The modern Netlify function serves `/api/*` and preserves the shared Node handler's cookies, body limits, HTTP status, and headers. `.netlify/` is excluded from Git.
 
 Set runtime variables in Netlify with the Functions scope and redeploy after changing them:
 
