@@ -24,6 +24,7 @@ Set runtime variables in Netlify with the Functions scope and redeploy after cha
 | Variable | Purpose |
 | --- | --- |
 | `SUPABASE_URL` | Selected project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Publishable key for Supabase Auth sign-in requests from the server; optional when the secret key is available |
 | `SUPABASE_SECRET_KEY` | Server-only Supabase secret key; legacy `SUPABASE_SERVICE_ROLE_KEY` is also supported |
 | `APP_URL` | Canonical HTTPS site URL used for payment notifications |
 | `MERCADOPAGO_ENVIRONMENT` | `test` initially; switch deliberately to `production` with matching credentials |
@@ -31,7 +32,7 @@ Set runtime variables in Netlify with the Functions scope and redeploy after cha
 | `MERCADOPAGO_WEBHOOK_SECRET` | Signature secret from the application's webhook settings |
 | `NODE_ENV` | `production` for secure cookies |
 
-The supreme administrator signs in with the confirmed `admin@novabet.com` Supabase Auth account. Its identity is pinned to the Auth user ID in the second database migration; its password is checked by Supabase Auth and never stored in this repository or `admin_users`. Other administrators created in the panel retain their local login and password hashes. Only the supreme administrator can create or change those accounts, and the supreme account is managed in Supabase Auth. Sessions expire after eight hours. This is a trusted internal team application, not a multi-tenant service.
+The supreme administrator signs in with the confirmed `admin@novabet.com` Supabase Auth account. Its identity is pinned to the Auth user ID in the second database migration; its password is checked by Supabase Auth and never stored in this repository or `admin_users`. The publishable key is used for that Auth request when configured. The separate `sb_secret_...` key is required for server-only database access; a publishable key in `SUPABASE_SECRET_KEY` is rejected. `SUPABASE_JWKS_URL` is not needed for the server's cookie sessions. Other administrators created in the panel retain their local login and password hashes. Only the supreme administrator can create or change those accounts, and the supreme account is managed in Supabase Auth. Sessions expire after eight hours. This is a trusted internal team application, not a multi-tenant service.
 
 ## Supabase
 
