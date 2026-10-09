@@ -1,27 +1,31 @@
 # NOVA Administration
 
-Painel administrativo com sessões, CRUD de sites e domínios, registros financeiros, integração Mercado Pago e relatórios por dia e estado.
+An administration dashboard with sessions, site and domain CRUD, financial records, Mercado Pago integration, and reports by day and state.
 
-## Executar
+## Run
 
-Requisitos: Node.js 24, Vercel Functions e Supabase.
+Requirements: Node.js 24, Vercel Functions, and Supabase.
 
 ```sh
 npm test
 npm start
 ```
 
-## Funcionamento
+## Behavior
 
-Backend Supabase exige `SUPABASE_URL` e uma chave de serviço exclusivamente no servidor. O primeiro administrador exige `INITIAL_ADMIN_USERNAME` e `INITIAL_ADMIN_PASSWORD`. Mercado Pago depende de `MERCADOPAGO_ACCESS_TOKEN` e `MERCADOPAGO_WEBHOOK_SECRET`. `/api/reports?month=2026-10` retorna totais em centavos e informa quando o limite de consulta foi atingido. Testes de API usam respostas controladas; não realizam pagamentos.
+The Supabase backend requires `SUPABASE_URL` and a server-only service key. Initial administrator setup requires `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD`. Mercado Pago uses `MERCADOPAGO_ACCESS_TOKEN` and `MERCADOPAGO_WEBHOOK_SECRET`. `/api/reports?month=2026-10` returns totals in cents and indicates when the query limit is reached. API tests use controlled responses and do not make payments.
 
-## Persistência de resultados
+## Result synchronization
 
-O arquivo de operações está em [vercel-home-telemetry-api.vercel.app](https://vercel-home-telemetry-api.vercel.app/laboratory.html?project=bet-admin-dashboard). As migrações Supabase estão no [repositório da API](https://github.com/brunnojob/vercel-home-telemetry-api/tree/main/supabase/migrations).
+The [operations archive](https://vercel-home-telemetry-api.vercel.app/laboratory.html?project=bet-admin-dashboard) stores execution results. Supabase migrations are in the [API repository](https://github.com/brunnojob/vercel-home-telemetry-api/tree/main/supabase/migrations).
 
 ```sh
-python cloud/sync.py enqueue resultado.json --project bet-admin-dashboard
+python cloud/sync.py enqueue result.json --project bet-admin-dashboard
 python cloud/sync.py sync
 ```
 
-Defina `BRUNNODEV_ACCESS_TOKEN` com sua sessão. A fila SQLite conserva os relatórios até confirmação do servidor; o mesmo conteúdo não gera registros duplicados. Tokens não são gravados no código.
+Set `BRUNNODEV_ACCESS_TOKEN` to your session token. The SQLite outbox retains reports until the server confirms persistence; identical content does not create duplicate records. Tokens are not stored in source code. To run the synchronization tests:
+
+```sh
+python -m unittest discover -s cloud
+```
