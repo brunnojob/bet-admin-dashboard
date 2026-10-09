@@ -22,13 +22,17 @@ const fail = (message, status = 400) => {
   throw new HttpError(message, status);
 };
 const supabaseUrl = () => (process.env.SUPABASE_URL || "").replace(/\/$/, "");
-const supabaseKey = () =>
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  "";
+const supabaseKey = () => {
+  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  if (key.startsWith("sb_publishable_"))
+    fail("SUPABASE_SECRET_KEY contém uma chave publicável. Configure a chave secreta sb_secret_ no servidor.", 503);
+  return key;
+};
 
-function supabaseHeaders(extra = {}) {
-  const key = supabaseKey();
+function supabaseHeaders(extra = {}, auth = false) {
+  const key = auth && process.env.SUPABASE_PUBLISHABLE_KEY
+    ? process.env.SUPABASE_PUBLISHABLE_KEY
+    : supabaseKey();
   if (!supabaseUrl() || !key)
     fail("Backend Supabase não configurado no servidor.", 503);
   const headers = { apikey: key, "Content-Type": "application/json", ...extra };
@@ -157,7 +161,7 @@ async function verifySupabaseAuth(email, password, expectedId) {
   try {
     response = await fetch(`${supabaseUrl()}/auth/v1/token?grant_type=password`, {
       method: "POST",
-      headers: supabaseHeaders(),
+      headers: supabaseHeaders({}, true),
       body: JSON.stringify({ email, password }),
       signal: AbortSignal.timeout(15000),
       redirect: "error",

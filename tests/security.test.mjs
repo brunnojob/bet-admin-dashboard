@@ -5,9 +5,9 @@ import api from "../netlify/functions/api.mjs";
 
 async function withBackend(run, responder) {
   const fetch = globalThis.fetch;
-  const keys = ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "MERCADOPAGO_ENVIRONMENT", "MERCADOPAGO_ACCESS_TOKEN", "MERCADOPAGO_WEBHOOK_SECRET", "APP_URL"];
+  const keys = ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SECRET_KEY", "MERCADOPAGO_ENVIRONMENT", "MERCADOPAGO_ACCESS_TOKEN", "MERCADOPAGO_WEBHOOK_SECRET", "APP_URL"];
   const previous = Object.fromEntries(keys.map(k => [k, process.env[k]]));
-  Object.assign(process.env, { SUPABASE_URL: "https://unit.supabase.co", SUPABASE_SECRET_KEY: "test-only", MERCADOPAGO_ENVIRONMENT: "test", MERCADOPAGO_ACCESS_TOKEN: "test-only", MERCADOPAGO_WEBHOOK_SECRET: "test-webhook", APP_URL: "https://example.com" });
+  Object.assign(process.env, { SUPABASE_URL: "https://unit.supabase.co", SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test-only", SUPABASE_SECRET_KEY: "sb_secret_test-only", MERCADOPAGO_ENVIRONMENT: "test", MERCADOPAGO_ACCESS_TOKEN: "test-only", MERCADOPAGO_WEBHOOK_SECRET: "test-webhook", APP_URL: "https://example.com" });
   const calls = [];
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input);
@@ -52,6 +52,15 @@ test("missing Supabase credentials explain the failure instead of a generic inte
     for (const [index, key] of ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"].entries())
       if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
   }
+});
+test("a publishable key cannot be used for privileged database access", async () => {
+  await withBackend(async calls => {
+    process.env.SUPABASE_SECRET_KEY = "sb_publishable_wrong-role";
+    const response = await request("login", "POST", { username: "admin@novabet.com", password: "example-password" });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /chave publicável/);
+    assert.equal(calls.length, 0);
+  });
 });
 test("invalid JSON shapes and oversized streamed payloads are rejected", async () => {
   for (const value of [null, [], "text"]) assert.equal((await request("login", "POST", value)).status, 400);
@@ -111,6 +120,7 @@ test("Supabase Auth verifies the pinned supreme identity before issuing a sessio
     assert.equal(response.status, 200);
     assert.ok(response.headers.get("set-cookie")?.includes("HttpOnly"));
     assert.ok(calls.some(c => c.url.pathname === "/auth/v1/token" && c.data.email === "admin@novabet.com"));
+    assert.equal(calls.find(c => c.url.pathname === "/auth/v1/token").headers.apikey, "sb_publishable_test-only");
     assert.equal(calls.filter(c => c.url.pathname.endsWith("/admin_users") && c.method !== "GET").length, 0);
   }, c => c.url.pathname === "/auth/v1/token"
     ? { user: { id: "pinned-uid", email: "admin@novabet.com" } }
