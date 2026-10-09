@@ -1,59 +1,27 @@
-# NOVA BET
+# NOVA Administration
 
-Painel administrativo em produção com backend na Vercel, PostgreSQL no Supabase e integração de pagamentos Pix pelo Mercado Pago.
+Painel administrativo com sessões, CRUD de sites e domínios, registros financeiros, integração Mercado Pago e relatórios por dia e estado.
 
-## Infraestrutura
+## Executar
 
-- GitHub: `brunnojob/bet-admin-dashboard`
-- Supabase: `https://xtenkjzbzufergjutxts.supabase.co`
-- Vercel: projeto `bet-admin-dashboard`
-- Node.js 24
-- Sessão HttpOnly persistida no Supabase, proteção CSRF e senhas scrypt.
-- Tabelas com RLS habilitado; `anon` e `authenticated` não possuem acesso direto.
-
-## Variáveis da Vercel
-
-Configure somente em Environment Variables, nunca no Git:
-
-- `SUPABASE_URL`
-- `SUPABASE_SECRET_KEY` (preferido) ou `SUPABASE_SERVICE_ROLE_KEY`
-- `INITIAL_ADMIN_USERNAME`
-- `INITIAL_ADMIN_PASSWORD` (mínimo 12 caracteres; usado apenas se ainda não existir administrador)
-- `MERCADOPAGO_ACCESS_TOKEN`
-- `MERCADOPAGO_WEBHOOK_SECRET`
-
-Depois que o primeiro administrador for criado, remova `INITIAL_ADMIN_PASSWORD` da Vercel.
-
-## Mercado Pago via MCP no VS Code
-
-O repositório inclui `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "mercadopago-mcp-server": {
-      "type": "http",
-      "url": "https://mcp.mercadopago.com/mcp"
-    }
-  }
-}
-```
-
-No VS Code, recarregue a janela e use **Connect** para autenticar o MCP. O MCP auxilia o agente no desenvolvimento e configuração da integração; as credenciais de produção continuam armazenadas apenas no backend da Vercel.
-
-## Pagamentos
-
-`POST /api/mercadopago/pix` cria um pagamento Pix real em `https://api.mercadopago.com/v1/payments`, com `X-Idempotency-Key`. O endpoint de webhook valida `x-signature` por HMAC-SHA256 e consulta o pagamento no Mercado Pago antes de atualizar o status no Supabase.
-
-Não existe retorno de sucesso simulado: se as credenciais reais não estiverem configuradas, a API responde erro 503.
-
-Saques não são marcados como concluídos manualmente. Um fluxo de payout deve ser implementado somente com o produto/API de desembolso efetivamente habilitado na conta Mercado Pago.
-
-## Desenvolvimento local
+Requisitos: Node.js 24, Vercel Functions e Supabase.
 
 ```sh
-npm install
-npm run dev
+npm test
+npm start
 ```
 
-Use as mesmas variáveis de ambiente da produção. Abra `http://localhost:8000`.
+## Funcionamento
+
+Backend Supabase exige `SUPABASE_URL` e uma chave de serviço exclusivamente no servidor. O primeiro administrador exige `INITIAL_ADMIN_USERNAME` e `INITIAL_ADMIN_PASSWORD`. Mercado Pago depende de `MERCADOPAGO_ACCESS_TOKEN` e `MERCADOPAGO_WEBHOOK_SECRET`. `/api/reports?month=2026-10` retorna totais em centavos e informa quando o limite de consulta foi atingido. Testes de API usam respostas controladas; não realizam pagamentos.
+
+## Persistência de resultados
+
+O arquivo de operações está em [vercel-home-telemetry-api.vercel.app](https://vercel-home-telemetry-api.vercel.app/laboratory.html?project=bet-admin-dashboard). As migrações Supabase estão no [repositório da API](https://github.com/brunnojob/vercel-home-telemetry-api/tree/main/supabase/migrations).
+
+```sh
+python cloud/sync.py enqueue resultado.json --project bet-admin-dashboard
+python cloud/sync.py sync
+```
+
+Defina `BRUNNODEV_ACCESS_TOKEN` com sua sessão. A fila SQLite conserva os relatórios até confirmação do servidor; o mesmo conteúdo não gera registros duplicados. Tokens não são gravados no código.
