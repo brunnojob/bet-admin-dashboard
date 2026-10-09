@@ -37,17 +37,23 @@ function supabaseHeaders(extra = {}) {
 }
 
 async function db(table, { method = "GET", query = {}, body, prefer } = {}) {
+  const headers = supabaseHeaders(prefer ? { Prefer: prefer } : {});
   const url = new URL(`${supabaseUrl()}/rest/v1/${table}`);
   for (const [k, v] of Object.entries(query))
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
-  const headers = supabaseHeaders(prefer ? { Prefer: prefer } : {});
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-    redirect: "error",
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+      redirect: "error",
+    });
+  } catch (error) {
+    console.error("Supabase transport error", error);
+    fail("Backend Supabase indisponível. Tente novamente.", 503);
+  }
   const text = await response.text();
   let data = null;
   if (text) {
@@ -146,25 +152,27 @@ async function verifyPassword(password, encoded) {
   );
 }
 
-async function bootstrapAdmin() {
-  const existing = await db("admin_users", {
-    query: { select: "id", limit: 1 },
-  });
-  if (existing?.length) return;
-  const username = process.env.INITIAL_ADMIN_USERNAME;
-  const password = process.env.INITIAL_ADMIN_PASSWORD;
-  if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username || "") || !password || password.length < 12 || password.length > 256)
-    fail("Administrador inicial não configurado no servidor.", 503);
-  await db("admin_users", {
-    method: "POST",
-    body: {
-      username,
-      password_hash: await hashPassword(password),
-      active: true,
-    },
-    prefer: "return=minimal",
-  });
-  await audit(username, "BOOTSTRAP ADMIN");
+async function verifySupabaseAuth(email, password, expectedId) {
+  let response;
+  try {
+    response = await fetch(`${supabaseUrl()}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: supabaseHeaders(),
+      body: JSON.stringify({ email, password }),
+      signal: AbortSignal.timeout(15000),
+      redirect: "error",
+    });
+  } catch (error) {
+    if (error.status) throw error;
+    console.error("Supabase Auth transport error", error);
+    fail("Autenticação indisponível. Tente novamente.", 503);
+  }
+  if (response.status === 400 || response.status === 401 || response.status === 422)
+    return false;
+  if (!response.ok) fail("Autenticação indisponível. Tente novamente.", 502);
+  const result = await response.json();
+  return result.user?.id === expectedId &&
+    result.user?.email?.toLowerCase() === email.toLowerCase();
 }
 
 async function audit(actor, action) {
@@ -193,7 +201,7 @@ async function getSession(req) {
   const s = sessions?.[0];
   if (!s) return null;
   const users = await db("admin_users", {
-    query: { select: "id,username,active", id: `eq.${s.user_id}`, limit: 1 },
+    query: { select: "id,username,active,role", id: `eq.${s.user_id}`, limit: 1 },
   });
   const user = users?.[0];
   if (!user?.active) return null;
@@ -245,10 +253,10 @@ function statusFromMercadoPago(status) {
 }
 
 async function login(req, res, data) {
-  await bootstrapAdmin();
-  const username = String(data.username || "").trim();
+  const enteredUsername = String(data.username || "").trim();
+  const username = enteredUsername.includes("@") ? enteredUsername.toLowerCase() : enteredUsername;
   const password = String(data.password || "");
-  if (!/^[A-Za-z0-9_.-]{3,64}$/.test(username) || !password || password.length > 256)
+  if (!(/^[A-Za-z0-9_.-]{3,64}$/.test(username) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username)) || !password || password.length > 256)
     fail("Login ou senha inválidos.", 401);
 
   const minuteAgo = new Date(Date.now() - 60000).toISOString();
@@ -265,14 +273,15 @@ async function login(req, res, data) {
 
   const users = await db("admin_users", {
     query: {
-      select: "id,username,password_hash,active",
+      select: "id,username,password_hash,active,role,auth_user_id",
       username: `eq.${username}`,
       limit: 1,
     },
   });
   const user = users?.[0];
-  const ok =
-    user?.active && (await verifyPassword(password, user.password_hash));
+  const ok = Boolean(user?.active && (user.auth_user_id
+    ? user.role === "supreme" && await verifySupabaseAuth(username, password, user.auth_user_id)
+    : await verifyPassword(password, user.password_hash)));
   await db("login_attempts", {
     method: "POST",
     body: { username, success: Boolean(ok) },
@@ -320,7 +329,7 @@ async function state(res, session) {
     }),
     db("admin_users", {
       query: {
-        select: "id,username,active,created_at,updated_at",
+        select: "id,username,role,active,created_at,updated_at",
         order: "id.desc",
         limit: 1000,
       },
@@ -335,6 +344,7 @@ async function state(res, session) {
   ]);
   send(res, 200, {
     username: session.user.username,
+    role: session.user.role,
     csrf: session.csrf,
     gateway: {
       configured: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN && process.env.MERCADOPAGO_WEBHOOK_SECRET),
@@ -354,6 +364,8 @@ async function mutate(resource, method, id, data, session) {
   const actor = session.user.username;
   if (!["sites", "domains", "transactions", "users"].includes(resource))
     fail("Não encontrado.", 404);
+  if (resource === "users" && session.user.role !== "supreme")
+    fail("Apenas o administrador supremo gerencia acessos.", 403);
   if (!["POST", "PUT", "DELETE"].includes(method)) fail("Método não permitido.", 405);
   if ((method === "POST" && id !== null) || (method !== "POST" && id === null)) fail("Rota inválida.", 400);
   if (id !== null && (!Number.isSafeInteger(id) || id < 1)) fail("ID inválido.");
@@ -444,6 +456,8 @@ async function mutate(resource, method, id, data, session) {
   });
   const existing = before?.[0];
   if (!existing) fail("Registro não encontrado.", 404);
+  if (resource === "users" && existing.role === "supreme")
+    fail("Gerencie este acesso pelo Supabase Auth.", 409);
 
   if (resource === "transactions" && (existing.provider === "mercado_pago" || existing.status === "concluido"))
     fail("Movimentações processadas são imutáveis. Use a conciliação do provedor.", 409);

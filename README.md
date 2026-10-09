@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` and configure private values locally. Never commit
 
 ## Netlify
 
-Import this repository into the Netlify project `nova-admin-brunnojob`, with `main` as the production branch. `netlify.toml` sets the build command, publish directory, and function bundle. The modern Netlify function serves `/api/*` and preserves the shared Node handler's cookies, body limits, HTTP status, and headers. `.netlify/` is excluded from Git.
+The repository is linked to the Netlify project `nova-admin-brunnojob`, with `main` as the production branch. `netlify.toml` sets the build command, publish directory, and function bundle. The modern Netlify function serves `/api/*` and preserves the shared Node handler's cookies, body limits, HTTP status, and headers. `.netlify/` is excluded from Git.
 
 Set runtime variables in Netlify with the Functions scope and redeploy after changing them:
 
@@ -25,19 +25,17 @@ Set runtime variables in Netlify with the Functions scope and redeploy after cha
 | --- | --- |
 | `SUPABASE_URL` | Selected project URL |
 | `SUPABASE_SECRET_KEY` | Server-only Supabase secret key; legacy `SUPABASE_SERVICE_ROLE_KEY` is also supported |
-| `INITIAL_ADMIN_USERNAME` | First administrator username, 3–64 letters, digits, dots, underscores or hyphens |
-| `INITIAL_ADMIN_PASSWORD` | First administrator password, 12–256 characters |
 | `APP_URL` | Canonical HTTPS site URL used for payment notifications |
 | `MERCADOPAGO_ENVIRONMENT` | `test` initially; switch deliberately to `production` with matching credentials |
 | `MERCADOPAGO_ACCESS_TOKEN` | Server-only Mercado Pago credential |
 | `MERCADOPAGO_WEBHOOK_SECRET` | Signature secret from the application's webhook settings |
 | `NODE_ENV` | `production` for secure cookies |
 
-The initial credentials are used only when there are no administrators. Remove them after first setup. All signed-in administrators can manage infrastructure and accounts; this is a trusted internal team application, not a multi-tenant service.
+The supreme administrator signs in with the confirmed `admin@novabet.com` Supabase Auth account. Its identity is pinned to the Auth user ID in the second database migration; its password is checked by Supabase Auth and never stored in this repository or `admin_users`. Other administrators created in the panel retain their local login and password hashes. Only the supreme administrator can create or change those accounts, and the supreme account is managed in Supabase Auth. Sessions expire after eight hours. This is a trusted internal team application, not a multi-tenant service.
 
 ## Supabase
 
-The selected project is `nhqrzddvaexpozqxeeab`. The versioned schema is in `supabase/migrations/`. All seven tables have RLS enabled, with access revoked from `anon` and `authenticated`. Only the server's service role accesses them. Audit rows are append-only for that role. The browser never receives a Supabase secret key or password hash. The Supabase advisor reports [RLS enabled without policies](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) at INFO level: this is intentional because these tables are server-only, with browser-role grants revoked.
+The selected project is `nhqrzddvaexpozqxeeab`. The versioned schema is in `supabase/migrations/`. The second migration attaches the confirmed Auth user to the supreme account. All seven tables have RLS enabled, with access revoked from `anon` and `authenticated`. Only the server's service role accesses them. Audit rows are append-only for that role. The browser never receives a Supabase secret key or password hash. The Supabase advisor reports [RLS enabled without policies](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) at INFO level: this is intentional because these tables are server-only, with browser-role grants revoked.
 
 Do not apply the initial migration to an existing populated schema. Back up and reconcile such a schema first. This setup does not migrate data from any previous Supabase project.
 

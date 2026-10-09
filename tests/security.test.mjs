@@ -16,7 +16,7 @@ async function withBackend(run, responder) {
     let value = await responder?.(call);
     if (value === undefined) {
       const table = url.pathname.split("/").pop();
-      value = table === "admin_sessions" ? [{ id: 1, user_id: 1, csrf: "csrf" }] : table === "admin_users" ? [{ id: 1, username: "operator", active: true }] : [];
+      value = table === "admin_sessions" ? [{ id: 1, user_id: 1, csrf: "csrf" }] : table === "admin_users" ? [{ id: 1, username: "operator", role: "supreme", active: true }] : [];
     }
     return Response.json(value);
   };
@@ -38,6 +38,20 @@ test("Netlify adapter preserves unauthorized status and security headers", async
 test("malformed cookies do not become internal errors", async () => {
   const response = await api(new Request("https://example.com/api/state", { headers: { cookie: "session=%ZZ" } }));
   assert.equal(response.status, 401);
+});
+test("missing Supabase credentials explain the failure instead of a generic internal error", async () => {
+  const previous = [process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY, process.env.SUPABASE_SERVICE_ROLE_KEY];
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SECRET_KEY;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try {
+    const response = await request("login", "POST", { username: "admin@novabet.com", password: "example-password" });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /Supabase não configurado/);
+  } finally {
+    for (const [index, key] of ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"].entries())
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+  }
 });
 test("invalid JSON shapes and oversized streamed payloads are rejected", async () => {
   for (const value of [null, [], "text"]) assert.equal((await request("login", "POST", value)).status, 400);
@@ -75,9 +89,42 @@ test("withdrawals belong to the authenticated administrator and cannot be marked
 });
 test("password changes revoke existing sessions", async () => {
   await withBackend(async calls => {
-    assert.equal((await request("users/1", "PUT", { username: "operator", active: true, password: "long-test-password" })).status, 200);
+    assert.equal((await request("users/2", "PUT", { username: "operator", active: true, password: "long-test-password" })).status, 200);
     assert.ok(calls.some(c => c.url.pathname.endsWith("/admin_sessions") && c.method === "DELETE"));
+  }, c => c.url.pathname.endsWith("/admin_users") && c.url.searchParams.get("id") === "eq.2"
+    ? [{ id: 2, username: "operator", active: true, role: "admin" }]
+    : undefined);
+});
+test("only the supreme administrator can manage accounts, and its Auth account is protected", async () => {
+  await withBackend(async calls => {
+    assert.equal((await request("users", "POST", { username: "other", password: "long-test-password", active: true })).status, 403);
+    assert.equal(calls.filter(c => c.url.pathname.endsWith("/admin_users") && c.method !== "GET").length, 0);
+  }, c => c.url.pathname.endsWith("/admin_users") ? [{ id: 1, username: "operator", active: true, role: "admin" }] : undefined);
+  await withBackend(async calls => {
+    assert.equal((await request("users/1", "DELETE", {})).status, 409);
+    assert.equal(calls.filter(c => c.url.pathname.endsWith("/admin_users") && c.method !== "GET").length, 0);
   });
+});
+test("Supabase Auth verifies the pinned supreme identity before issuing a session", async () => {
+  await withBackend(async calls => {
+    const response = await request("login", "POST", { username: "ADMIN@NOVABET.COM", password: "provided-to-auth-only" });
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get("set-cookie")?.includes("HttpOnly"));
+    assert.ok(calls.some(c => c.url.pathname === "/auth/v1/token" && c.data.email === "admin@novabet.com"));
+    assert.equal(calls.filter(c => c.url.pathname.endsWith("/admin_users") && c.method !== "GET").length, 0);
+  }, c => c.url.pathname === "/auth/v1/token"
+    ? { user: { id: "pinned-uid", email: "admin@novabet.com" } }
+    : c.url.pathname.endsWith("/admin_users")
+      ? [{ id: 1, username: "admin@novabet.com", active: true, role: "supreme", auth_user_id: "pinned-uid" }]
+      : undefined);
+  await withBackend(async () => {
+    const response = await request("login", "POST", { username: "admin@novabet.com", password: "provided-to-auth-only" });
+    assert.equal(response.status, 401);
+  }, c => c.url.pathname === "/auth/v1/token"
+    ? { user: { id: "different-uid", email: "admin@novabet.com" } }
+    : c.url.pathname.endsWith("/admin_users")
+      ? [{ id: 1, username: "admin@novabet.com", active: true, role: "supreme", auth_user_id: "pinned-uid" }]
+      : undefined);
 });
 test("same Pix request persists once and reuses the provider payment", async () => {
   let row;
