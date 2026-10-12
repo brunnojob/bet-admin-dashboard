@@ -17,4 +17,4 @@ const server = createServer(async (req, res) => {
   res.end(html);
 });
 
-server.listen(port, '127.0.0.1', () => console.log(`NOVA BET em bet-admin-dashboard-eight.vercel.app:${port}`));
+server.listen(port, '127.0.0.1', () => console.log(`NOVA BET em bet-admin-dashboard-eight.vercel.app:${port} | NOVA ADMIN em http://localhost:${port}`));

@@ -1,71 +1,81 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { createApp } from '../server.mjs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { once } from 'node:events';
-import { DatabaseSync } from 'node:sqlite';
+import test from "node:test";
+import assert from "node:assert/strict";
+import handler from "../api/index.mjs";
 
-test('authenticated CRUD, money, relationships, sessions and persistence', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'nova-bet-'));
-  const databasePath = join(dir, 'test.sqlite3');
-  const legacy = new DatabaseSync(databasePath);
-  legacy.exec('CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)');
-  legacy.prepare('INSERT INTO users(username,password) VALUES (?,?)').run('admingb', '00112233445566778899aabbccddeeff:346b33ac110805be1b5c8a11ef977ee38297d5d5f34181eb01d865a59ec33a6310c304646e9e6530e6b0851736b21538a3f29f73ad8fa092af4026e9b83e586b');
-  legacy.close();
-  let server = await createApp({ databasePath });
-  let base, cookie = '', csrf = '';
-  const start = async () => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); base = 'http://127.0.0.1:' + server.address().port; };
-  const stop = () => new Promise(resolve => server.close(resolve));
-  const request = async (path, method = 'GET', data, extra = {}) => {
-    const response = await fetch(base + '/api/' + path, { method, headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf, ...extra }, body: data === undefined ? undefined : JSON.stringify(data) });
-    return { status: response.status, data: await response.json(), headers: response.headers };
+function response() {
+  return {
+    headers: {},
+    statusCode: 0,
+    setHeader(key, value) {
+      this.headers[key] = value;
+    },
+    end(value) {
+      this.body = JSON.parse(value);
+    },
+  };
+}
+test("unauthenticated production endpoints never access the database", async () => {
+  const original = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error("unexpected database access");
   };
   try {
-    await start();
-    assert.equal((await request('state')).status, 401);
-    assert.equal((await request('login', 'POST', { username: 'admingb', password: 'wrong' })).status, 401);
-    const login = await request('login', 'POST', { username: 'admingb', password: 'admin' });
-    assert.equal(login.status, 200);
-    cookie = login.headers.get('set-cookie').split(';')[0]; csrf = login.data.csrf;
-    const siteData = { name: 'NOVA BET', url: 'https://example.com', status: 'ativo' };
-    assert.equal((await request('sites', 'POST', siteData, { 'X-CSRF-Token': '' })).status, 403);
-    assert.equal((await request('sites', 'POST', siteData, { Origin: 'https://other.com' })).status, 403);
-    const site = await request('sites', 'POST', siteData);
-    assert.equal(site.status, 200);
-    const domain = await request('domains', 'POST', { name: 'example.com', site_id: site.data.id, status: 'ativo' });
-    assert.equal(domain.status, 200);
-    assert.equal((await request('sites/' + site.data.id, 'DELETE', {})).status, 409);
-    const tx = { kind: 'saque', customer: 'Referência 1', amount: '10.25', status: 'pendente', site_id: site.data.id };
-    const movement = await request('transactions', 'POST', tx);
-    assert.equal(movement.status, 200);
-    for (const amount of ['-1', '0.001', 'NaN', '100000000.01']) assert.equal((await request('transactions', 'POST', { ...tx, amount })).status, 400);
-    assert.equal((await request('transactions/' + movement.data.id, 'PUT', { status: 'concluido' })).status, 200);
-    let state = (await request('state')).data;
-    assert.equal(state.transactions[0].amount, 1025);
-    assert.equal(state.gateway.connected, false);
-    assert.equal('password' in state.users[0], false);
-    const uid = state.users[0].id;
-    assert.equal((await request('users/' + uid, 'DELETE', {})).status, 400);
-    assert.equal((await request('users/' + uid, 'PUT', { active: false })).status, 400);
-    const admin = await request('users', 'POST', { username: 'operator', password: 'secret123', active: true });
-    assert.equal(admin.status, 200);
-    assert.equal((await request('users/' + admin.data.id, 'PUT', { username: 'operator2', password: 'newsecret' })).status, 200);
-    assert.equal((await request('login', 'POST', { username: 'operator2', password: 'newsecret' })).status, 200);
-    assert.equal((await request('users/' + admin.data.id, 'DELETE', {})).status, 200);
-    assert.equal((await request('transactions/' + movement.data.id, 'DELETE', {})).status, 200);
-    assert.equal((await request('domains/' + domain.data.id, 'DELETE', {})).status, 200);
-    assert.equal((await request('sites/' + site.data.id, 'PUT', { name: 'NOVA BET atualizada' })).status, 200);
-    await stop(); server = await createApp({ databasePath }); await start();
-    assert.equal((await request('state')).status, 401);
-    const again = await request('login', 'POST', { username: 'admingb', password: 'admin' });
-    cookie = again.headers.get('set-cookie').split(';')[0]; csrf = again.data.csrf;
-    state = (await request('state')).data;
-    assert.equal(state.sites[0].name, 'NOVA BET atualizada');
-    assert.ok(state.audit.length > 5);
-    assert.equal((await request('sites/' + site.data.id, 'DELETE', {})).status, 200);
-    assert.equal((await request('logout', 'POST', {})).status, 200);
-    assert.equal((await request('state')).status, 401);
-  } finally { if (server.listening) await stop(); await rm(dir, { recursive: true, force: true }); }
+    const res = response();
+    await handler({ method: "GET", url: "/api/reports", headers: {} }, res);
+    assert.equal(res.statusCode, 401);
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+test("authenticated financial report reads paginated Supabase records", async () => {
+  const original = globalThis.fetch;
+  const priorUrl = process.env.SUPABASE_URL;
+  const priorKey = process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_URL = "https://project.supabase.co";
+  process.env.SUPABASE_SECRET_KEY = "test-server-key";
+  globalThis.fetch = async (url) => {
+    const name = new URL(url).pathname.split("/").pop();
+    const data =
+      name === "admin_sessions"
+        ? [{ id: 1, user_id: 1, csrf: "csrf", expires_at: "2027-01-01" }]
+        : name === "admin_users"
+          ? [{ id: 1, username: "operator", active: true }]
+          : name === "transactions"
+            ? [
+                {
+                  id: 1,
+                  kind: "deposito",
+                  status: "concluido",
+                  amount: 1234,
+                  created_at: "2026-10-09T10:00:00Z",
+                },
+              ]
+            : null;
+    return new Response(data === null ? "" : JSON.stringify(data), {
+      status: 200,
+    });
+  };
+  try {
+    const res = response();
+    await handler(
+      {
+        method: "GET",
+        url: "/api/reports?month=2026-10",
+        headers: { cookie: "session=test-session" },
+      },
+      res,
+    );
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.netMinor, 1234);
+    assert.equal(res.body.truncated, false);
+  } finally {
+    globalThis.fetch = original;
+    if (priorUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = priorUrl;
+    if (priorKey === undefined) delete process.env.SUPABASE_SECRET_KEY;
+    else process.env.SUPABASE_SECRET_KEY = priorKey;
+  }
 });
