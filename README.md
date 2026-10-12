@@ -4,9 +4,10 @@ Internal administration for authorized administrators: sites, domains, financial
 
 ## Run and verify
 
-Requires Node.js 24. The application has no runtime npm dependencies.
+Requires Node.js 24 and Python 3 for the optional cloud utility tests.
 
 ```sh
+npm ci
 npm test
 python -m unittest discover -s cloud
 npm run build
